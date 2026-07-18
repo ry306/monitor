@@ -12,6 +12,18 @@
       "status": "candidate",
       "title": "PAGE TOP"
     },
+    "https://www.amazon.co.jp/dp/B0DT41CN38": {
+      "price": 30124,
+      "source": "Amazon",
+      "status": "candidate",
+      "title": "￥30,124 ￥ 30,124"
+    },
+    "https://www.amazon.co.jp/dp/B0H8R8BG7B": {
+      "price": null,
+      "source": "Amazon",
+      "status": "candidate",
+      "title": "オプションを表示"
+    },
     "https://www.amiami.jp/top/detail/detail?gcode=CARD-00034096": {
       "price": null,
       "source": "あみあみ",
