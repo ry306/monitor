@@ -21,17 +21,6 @@ from bs4 import BeautifulSoup
 PRODUCT_CODE = "DM26-EX3"
 PRODUCT_NAME = "文化祭だョ！全員集合!!ドラ娘100％パック"
 OFFICIAL_BOX_PRICE = 6160
-# 1BOX監視のため、希望小売価格の50％未満は単品パックや誤取得として除外する。
-MIN_BOX_PRICE = OFFICIAL_BOX_PRICE // 2
-
-TARGET_CODE_RE = re.compile(
-    r"(?<![a-z0-9])dm[\s_-]*26[\s_-]*ex[\s_-]*0?3(?!\d)",
-    re.IGNORECASE,
-)
-ANY_EX_CODE_RE = re.compile(
-    r"(?<![a-z0-9])dm[\s_-]*(\d{2})[\s_-]*ex[\s_-]*(\d+)(?!\d)",
-    re.IGNORECASE,
-)
 
 STATE_FILE = Path(os.getenv("STATE_FILE", "state.json"))
 NTFY_TOPIC = os.getenv("NTFY_TOPIC", "").strip()
@@ -156,6 +145,12 @@ BLOCKED_SEARCH_DOMAINS = (
     "gachi-matome.com",
 )
 
+# DM26-EX3、DM26EX3、DM26_EX03などを認識する。
+PRODUCT_CODE_RE = re.compile(
+    r"(?<![a-z0-9])dm[\s_-]*(\d{2})[\s_-]*ex[\s_-]*(\d+)(?!\d)",
+    re.IGNORECASE,
+)
+
 
 @dataclass(frozen=True)
 class Candidate:
@@ -168,7 +163,7 @@ class Candidate:
 
 
 def normalize(text: str) -> str:
-    """比較しやすい形式へ文字列を正規化する。"""
+    """文字列を比較しやすい形式へ正規化する。"""
     text = html.unescape(text or "")
     text = unicodedata.normalize("NFKC", text)
     text = text.replace("％", "%")
@@ -176,92 +171,56 @@ def normalize(text: str) -> str:
     return text.strip().lower()
 
 
-def link_label(anchor) -> str:
-    """
-    商品リンク自身のラベルを取得する。
+def extract_product_codes(text: str) -> set[tuple[int, int]]:
+    """文章中のDMxx-EXxx形式の商品コードを取得する。"""
+    value = normalize(text)
+    codes: set[tuple[int, int]] = set()
 
-    検索結果一覧全体ではなく、リンク文字列・title・aria-label・
-    画像のaltだけを使い、隣の商品が混ざるのを防ぐ。
-    """
-    parts = [
-        anchor.get_text(" ", strip=True),
-        anchor.get("title", ""),
-        anchor.get("aria-label", ""),
-    ]
+    for series, number in PRODUCT_CODE_RE.findall(value):
+        try:
+            codes.add((int(series), int(number)))
+        except ValueError:
+            continue
 
-    for image in anchor.find_all("img"):
-        parts.append(image.get("alt", ""))
-
-    values: list[str] = []
-    for part in parts:
-        value = str(part or "").strip()
-        if value and value not in values:
-            values.append(value)
-
-    return " ".join(values)
+    return codes
 
 
 def looks_like_target(title: str, url: str = "") -> bool:
     """
-    商品リンクがDM26-EX3そのものか判定する。
+    商品名またはURLがDM26-EX3そのものか判定する。
 
-    DM26-EX2など別の商品コードが含まれる場合は除外する。
-    商品コードがない場合のみ、商品名の主要語で判定する。
+    商品名にDM26-EX2などの別コードが明記されている場合は除外する。
+    商品コードがない場合は商品名の特徴で判定する。
     """
-    value = normalize(f"{title} {url}")
+    target_code = (26, 3)
 
-    detected_codes = {
-        (series, number.lstrip("0") or "0")
-        for series, number in ANY_EX_CODE_RE.findall(value)
-    }
+    title_codes = extract_product_codes(title)
 
-    if detected_codes:
-        # 別コードも同時に含む曖昧なリンクは通知しない。
-        return detected_codes == {("26", "3")}
+    if title_codes:
+        # 複数の商品コードが混ざる曖昧なタイトルも除外する。
+        return title_codes == {target_code}
 
-    if TARGET_CODE_RE.search(value):
-        return True
+    url_codes = extract_product_codes(
+        urllib.parse.unquote(url)
+    )
+
+    if url_codes:
+        return url_codes == {target_code}
+
+    value = normalize(title)
 
     return (
         "文化祭" in value
         and "ドラ娘" in value
-        and ("100%" in value or "100パーセント" in value)
+        and (
+            "100%" in value
+            or "100パーセント" in value
+        )
     )
-
-
-def is_unwanted_variant(title: str, price: int | None) -> bool:
-    """1BOX監視に不要な単品パック・複数BOX・カートンを除外する。"""
-    value = normalize(title)
-
-    if "カートン" in value:
-        return True
-
-    box_count = re.search(r"(?<!\d)(\d+)\s*(?:box|ボックス)", value)
-    if box_count and int(box_count.group(1)) >= 2:
-        return True
-
-    single_pack_words = (
-        "1パック",
-        "単品パック",
-        "バラパック",
-        "ばらパック",
-        "パック単品",
-        "1 pack",
-        "single pack",
-    )
-    if any(word in value for word in single_pack_words):
-        return True
-
-    # DM26-EX3の1パックは440円。低価格表示は単品や周辺商品の
-    # 価格を拾っている可能性が高いため、1BOX候補から除外する。
-    if price is not None and price < MIN_BOX_PRICE:
-        return True
-
-    return False
 
 
 def classify_status(text: str) -> str:
-    """ページ上の文言から在庫状態を分類する。"""
+    """ページ上の文言から予約・在庫状態を分類する。"""
     value = normalize(text)
 
     negative = any(
@@ -273,8 +232,8 @@ def classify_status(text: str) -> str:
         for word in POSITIVE_WORDS
     )
 
-    # 「予約受付終了」の中にも「予約」が含まれるため、
-    # 在庫なし・受付終了の判定を優先する。
+    # 「予約受付終了」には「予約」が含まれるため、
+    # 在庫なし・受付終了を優先する。
     if negative:
         return "unavailable"
 
@@ -318,7 +277,7 @@ def canonicalize_url(url: str) -> str:
     amazon_match = re.search(
         r"/(?:dp|gp/product)/([A-Z0-9]{10})",
         path,
-        re.I,
+        re.IGNORECASE,
     )
 
     if amazon_match and host.endswith("amazon.co.jp"):
@@ -363,17 +322,44 @@ def allowed_link(
 ) -> bool:
     """通販サイトの商品URLとして許可された形式か判定する。"""
     return any(
-        re.search(pattern, url, re.I)
+        re.search(pattern, url, re.IGNORECASE)
         for pattern in patterns
     )
 
 
+def link_label(anchor) -> str:
+    """
+    商品リンク自身に含まれる商品名を取得する。
+
+    隣の商品情報が混ざらないよう、
+    リンク本文、title、aria-label、画像altだけを使用する。
+    """
+    parts = [
+        anchor.get_text(" ", strip=True),
+        anchor.get("title", ""),
+        anchor.get("aria-label", ""),
+    ]
+
+    for image in anchor.find_all("img"):
+        parts.append(image.get("alt", ""))
+
+    unique_parts: list[str] = []
+
+    for part in parts:
+        part = str(part or "").strip()
+
+        if part and part not in unique_parts:
+            unique_parts.append(part)
+
+    return " ".join(unique_parts)
+
+
 def surrounding_text(anchor) -> str:
     """
-    商品カード内の在庫文言と価格を取得する。
+    商品リンク周辺の価格・在庫文言を取得する。
 
-    大きな親要素まで遡ると隣の商品が混ざるため、
-    800文字以内の最も近い要素だけを採用する。
+    大きな検索結果コンテナまで遡ると隣の商品が混ざるため、
+    800文字を超える親要素は使用しない。
     """
     best_text = link_label(anchor)
     parent = anchor.parent
@@ -383,26 +369,16 @@ def surrounding_text(anchor) -> str:
             break
 
         text = parent.get_text(" ", strip=True)
-        parent = parent.parent
 
         if not text:
+            parent = parent.parent
             continue
 
         if len(text) > 800:
             break
 
         best_text = text
-
-        has_price = bool(
-            re.search(r"(?:[¥￥]\s*[0-9]|[0-9][0-9,]*\s*円)", text)
-        )
-        has_status = any(
-            normalize(word) in normalize(text)
-            for word in POSITIVE_WORDS + NEGATIVE_WORDS
-        )
-
-        if has_price or has_status:
-            break
+        parent = parent.parent
 
     return best_text
 
@@ -440,21 +416,17 @@ def scan_store_source(source: dict) -> list[Candidate]:
 
         title = link_label(anchor)
 
-        # 商品名を持たない画像・装飾リンクは誤検出防止のため除外する。
+        # 商品名を取得できないリンクは誤検出防止のため除外する。
         if not title:
             continue
 
-        # 周辺の商品説明ではなく、商品リンク自身の名前とURLで判定する。
+        # 商品リンク自身の名前とURLで対象商品を判定する。
         if not looks_like_target(title, raw_url):
             continue
 
         context = surrounding_text(anchor)
-        price = extract_price(context)
-
-        if is_unwanted_variant(title, price):
-            continue
-
         url = canonicalize_url(raw_url)
+        price = extract_price(context)
 
         candidate = Candidate(
             source=source["name"],
@@ -499,15 +471,12 @@ def scan_bing_rss(query: str) -> list[Candidate]:
         url = item.findtext("link") or ""
         description = item.findtext("description") or ""
 
-        context = f"{title} {description}"
-
-        # 検索結果の説明文ではなく、タイトルとURLで商品を特定する。
+        # 説明文に偶然DM26-EX3が含まれていても通さない。
+        # 検索結果のタイトルとURLだけで対象商品を判定する。
         if not looks_like_target(title, url):
             continue
 
-        price = extract_price(context)
-        if is_unwanted_variant(title, price):
-            continue
+        context = f"{title} {description}"
 
         host = urllib.parse.urlsplit(
             url
@@ -534,7 +503,7 @@ def scan_bing_rss(query: str) -> list[Candidate]:
                 url=canonicalize_url(url),
                 context=context[:1200],
                 status=status,
-                price=price,
+                price=extract_price(context),
             )
         )
 
@@ -614,9 +583,8 @@ def candidate_state(candidate: Candidate) -> dict:
     """
     state.jsonへ保存する候補情報を作る。
 
-    実行日時は入れない。
-    監視結果が変わらない場合に、
-    Gitの差分が発生しないようにする。
+    実行日時は入れず、監視結果が同じなら
+    状態ファイルの内容も変わらないようにする。
     """
     return {
         "source": candidate.source,
@@ -624,6 +592,86 @@ def candidate_state(candidate: Candidate) -> dict:
         "status": candidate.status,
         "price": candidate.price,
     }
+
+
+def build_listing_warning(
+    title: str,
+    price: int | None,
+) -> str:
+    """
+    販売数量や価格が怪しい場合の警告文を作る。
+
+    対象商品自体は除外せず、通知に注意書きを付ける。
+    """
+    value = normalize(title)
+    warnings: list[str] = []
+
+    if "カートン" in value:
+        warnings.append(
+            "⚠ 数量注意：カートン表記があります。"
+            "実際の販売数量を確認してください。"
+        )
+
+    box_count = re.search(
+        r"(?<!\d)(\d+)\s*(?:box|ボックス)",
+        value,
+        re.IGNORECASE,
+    )
+
+    if (
+        box_count
+        and int(box_count.group(1)) >= 2
+    ):
+        warnings.append(
+            "⚠ 数量注意："
+            f"{box_count.group(1)}BOX表記があります。"
+            "実際の販売数量を確認してください。"
+        )
+
+    single_pack_words = (
+        "1パック",
+        "単品パック",
+        "バラパック",
+        "ばらパック",
+        "パック単品",
+        "1 pack",
+        "single pack",
+    )
+
+    if any(
+        word in value
+        for word in single_pack_words
+    ):
+        warnings.append(
+            "⚠ 単品注意："
+            "1BOXではなく単品パックの可能性があります。"
+        )
+
+    if (
+        price is not None
+        and price < OFFICIAL_BOX_PRICE * 0.5
+    ):
+        warnings.append(
+            "⚠ 価格注意："
+            "1BOX価格としては低すぎます。"
+            "単品価格、送料、または価格誤取得の可能性があります。"
+        )
+
+    if (
+        price is not None
+        and price > OFFICIAL_BOX_PRICE * 1.25
+    ):
+        warnings.append(
+            "⚠ 高額注意："
+            f"希望小売価格1BOX {OFFICIAL_BOX_PRICE:,}円の"
+            "125％を超えています。"
+            "複数BOX商品、送料、販売元を確認してください。"
+        )
+
+    if not warnings:
+        return ""
+
+    return "\n".join(warnings) + "\n"
 
 
 def send_ntfy(candidate: Candidate) -> None:
@@ -642,24 +690,10 @@ def send_ntfy(candidate: Candidate) -> None:
             "検出価格: ページで確認\n"
         )
 
-    warning = ""
-
-    high_price_limit = (
-        OFFICIAL_BOX_PRICE * 1.25
+    warning = build_listing_warning(
+        candidate.title,
+        candidate.price,
     )
-
-    if (
-        candidate.price is not None
-        and candidate.price > high_price_limit
-    ):
-        warning = (
-            "⚠ 高額注意\n"
-            f"希望小売価格1BOX "
-            f"{OFFICIAL_BOX_PRICE:,}円の"
-            "125％を超えています。\n"
-            "複数BOX商品、送料、販売元を"
-            "確認してください。\n"
-        )
 
     status_label = {
         "available": "予約・購入可能の可能性",
@@ -863,7 +897,7 @@ def main() -> int:
                 )
 
                 # 通知に失敗した候補は保存しない。
-                # 次回実行時に再度通知を試す。
+                # 次回実行時に再度通知する。
                 continue
 
         new_item = candidate_state(candidate)
@@ -873,7 +907,7 @@ def main() -> int:
             state_changes += 1
 
     # 毎回変化する実行日時やエラー履歴は保存しない。
-    # 商品情報に変更がなければGit差分も発生しない。
+    # 商品情報が同じなら状態ファイルの内容も変わらない。
     new_state = {
         "items": old_items,
     }
@@ -889,8 +923,8 @@ def main() -> int:
         f"errors={len(errors)}"
     )
 
-    # 一部サイトでアクセス拒否やHTML変更が発生しても、
-    # 他サイトの監視を継続するため正常終了とする。
+    # 一部サイトでアクセス拒否やHTML変更が起きても、
+    # ほかのサイトの監視を続けるため正常終了とする。
     return 0
 
 
