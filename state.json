@@ -1,0 +1,22 @@
+{
+  "items": {
+    "https://store.shopping.yahoo.co.jp/sogostoreluluku/dhdh.html": {
+      "price": 9990,
+      "source": "Yahoo!ショッピング",
+      "status": "candidate",
+      "title": "BOX デュエル・マスターズ  DM26-EX3 キャラプレミアムパック ドラゴン娘になりたくないっ! 文化祭だョ!全員集合!!ドラ娘100％パック"
+    },
+    "https://www.1999.co.jp/search": {
+      "price": null,
+      "source": "ホビーサーチ",
+      "status": "candidate",
+      "title": "PAGE TOP"
+    },
+    "https://www.amiami.jp/top/detail/detail?gcode=CARD-00034096": {
+      "price": null,
+      "source": "あみあみ",
+      "status": "candidate",
+      "title": "デュエル・マスターズTCG キャラプレミアムパック ドラゴン娘になりたくないっ！ 文化祭だョ！全員集合！！ドラ娘100％パック BOX 販売停止中 6,160"
+    }
+  }
+}
